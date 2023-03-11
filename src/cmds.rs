@@ -34,22 +34,23 @@ pub enum CommandType {
     SubPlan,
 }
 
-#[derive(Clone, Debug, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Literal {
     dynamic: bool,
-    bytes: Vec<u8>,
+    bytes: Bytes,
 }
+impl Eq for Literal {}
 
 impl<T: Tokenizable + AbiEncode + Clone> From<T> for Literal {
     fn from(token: T) -> Self {
         Literal {
             dynamic: token.clone().into_token().is_dynamic(),
-            bytes: token.encode(),
+            bytes: token.encode().into(),
         }
     }
 }
 
-impl<T: Tokenizable + AbiEncode + Clone> From<T> for Value<'_> {
+impl<T: Tokenizable + AbiEncode + Clone> From<T> for Value {
     fn from(token: T) -> Self {
         Value::Literal(token.into())
     }
@@ -72,21 +73,21 @@ impl Hash for Literal {
     }
 }
 
-#[derive(Debug)]
-pub enum Value<'a> {
+#[derive(Debug, Clone)]
+pub enum Value {
     Literal(Literal),
     Return(ReturnValue),
     State(Vec<Bytes>),
-    Subplan(&'a Planner<'a>),
+    Subplan(Planner),
 }
 
-impl From<ReturnValue> for Value<'_> {
+impl<'a> From<ReturnValue> for Value {
     fn from(value: ReturnValue) -> Self {
         Self::Return(value)
     }
 }
 
-impl Value<'_> {
+impl Value {
     pub fn is_dynamic_type(&self) -> bool {
         match self {
             Value::Literal(l) => l.dynamic,
@@ -97,14 +98,13 @@ impl Value<'_> {
     }
 }
 
-
-#[derive(Debug)]
-pub struct Command<'a> {
-    pub(crate) call: FunctionCall<'a>,
+#[derive(Debug, Clone)]
+pub struct Command {
+    pub(crate) call: FunctionCall,
     pub(crate) kind: CommandType,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ReturnValue {
     pub(crate) dynamic: bool,
     pub(crate) command: DefaultKey,
