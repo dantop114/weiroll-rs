@@ -2,3 +2,4 @@
 Cargo.lock
 .envrc
 /weiroll.js
+.DS_Store
