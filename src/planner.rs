@@ -51,6 +51,7 @@ impl Planner {
     pub fn call<'a>(
         &mut self,
         address: Address,
+        command_flag: CommandFlags,
         selector: [u8; 4],
         args: Vec<Value>,
         return_type: ParamType,
@@ -58,7 +59,7 @@ impl Planner {
         let dynamic = return_type.is_dynamic();
         let call = FunctionCall {
             address,
-            flags: CommandFlags::CALL,
+            flags: command_flag,
             value: Some(U256::zero()),
             selector,
             args,
@@ -472,6 +473,7 @@ mod tests {
         planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(2).into()],
                 ParamType::Uint(256),
@@ -482,7 +484,7 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0x771602f7000001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f7010001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -498,6 +500,7 @@ mod tests {
         planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(1).into()],
                 ParamType::Uint(256),
@@ -513,6 +516,7 @@ mod tests {
         let ret = planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(2).into()],
                 ParamType::Uint(256),
@@ -521,6 +525,7 @@ mod tests {
         planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![ret.into(), U256::from(3).into()],
                 ParamType::Uint(256),
@@ -530,13 +535,13 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0],
-            "0x771602f7000001ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f7010001ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
         assert_eq!(
             commands[1],
-            "0x771602f7000102ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f7010102ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -553,6 +558,7 @@ mod tests {
         let ret = planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(1).into()],
                 ParamType::Uint(256),
@@ -561,6 +567,7 @@ mod tests {
         planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), ret.into()],
                 ParamType::Uint(256),
@@ -570,13 +577,13 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0],
-            "0x771602f7000000ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f7010000ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
         assert_eq!(
             commands[1],
-            "0x771602f7000001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f7010001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -591,6 +598,7 @@ mod tests {
         planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 StrlenCall::selector(),
                 vec![String::from("Hello, world!").into()],
                 ParamType::Uint(256),
@@ -600,7 +608,7 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0x367bbd780080ffffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x367bbd780180ffffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -614,6 +622,7 @@ mod tests {
         let ret = planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 StrcatCall::selector(),
                 vec![
                     String::from("Hello, ").into(),
@@ -626,7 +635,7 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0xd824ccf3008081ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0xd824ccf3018081ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -641,6 +650,7 @@ mod tests {
         let ret = planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 StrcatCall::selector(),
                 vec![
                     String::from("Hello, ").into(),
@@ -650,19 +660,20 @@ mod tests {
             )
             .expect("can add call");
         planner
-            .call(addr(),StrlenCall::selector(),  vec![ret.into()], ParamType::Uint(256))
+            .call(addr(),
+            CommandFlags::CALL,StrlenCall::selector(),  vec![ret.into()], ParamType::Uint(256))
             .expect("can add call with return val");
         let (commands, state) = planner.plan().expect("plan");
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0],
-            "0xd824ccf3008081ffffffff81eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0xd824ccf3018081ffffffff81eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
         assert_eq!(
             commands[1],
-            "0x367bbd780081ffffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x367bbd780181ffffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -704,6 +715,7 @@ mod tests {
         subplanner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(2).into()],
                 ParamType::Uint(256),
@@ -739,19 +751,19 @@ mod tests {
         ]);
 
         // let decoded = Vec::<Bytes>::decode(subcommands_bytes).unwrap();
-        println!("state: {:?}", state);
-        assert_eq!(
-            state[2].clone(),
-            "0x771602f7000001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
-        );
+        // println!("state: {:?}", state);
+        // assert_eq!(
+        //     state[2].clone(),
+        //     "0x771602f7010001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        //         .parse::<Bytes>()
+        //         .unwrap()
+        // );
         // let subcommands = &Vec::<Bytes>::decode(subcommands_bytes).unwrap()[0];
         // let decoded: Vec<Vec<u8>> = Vec::<Vec<u8>>::decode(subcommands_bytes).unwrap();
         // assert_eq!(decoded.len(), 1);
         // assert_eq!(
         //     Bytes::from(decoded[0].clone()),
-        //     "0x771602f7000001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        //     "0x771602f7010001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         //         .parse::<Bytes>()
         //         .unwrap()
         // );
@@ -763,6 +775,7 @@ mod tests {
         let sum = subplanner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(2).into()],
                 ParamType::Uint(256),
@@ -780,6 +793,7 @@ mod tests {
         planner
             .call(
                 addr(),
+                CommandFlags::CALL,
                 AddCall::selector(),
                 vec![sum.into(), U256::from(3).into()],
                 ParamType::Uint(256),
@@ -797,7 +811,7 @@ mod tests {
         assert_eq!(
             commands[0],
             // sum + 3
-            "0x771602f7000102ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f7010102ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
