@@ -2,6 +2,8 @@ use crate::calls::FunctionCall;
 use crate::cmds::{Command, CommandFlags, CommandType, Literal, ReturnValue, Value};
 use crate::error::WeirollError;
 
+use bytes::BufMut;
+use bytes::BytesMut;
 use ethers::abi::{AbiEncode, ParamType};
 use ethers::prelude::*;
 use slotmap::{DefaultKey, HopSlotMap};
@@ -218,7 +220,7 @@ impl Planner {
 
             let mut flags = command.call.flags;
 
-            let args = self.build_command_args(
+            let mut args = self.build_command_args(
                 command,
                 &ps.return_slot_map,
                 &ps.literal_slot_map,
@@ -278,38 +280,20 @@ impl Planner {
             }
 
             if (flags & CommandFlags::EXTENDED_COMMAND) == CommandFlags::EXTENDED_COMMAND {
-                // todo
-                tracing::warn!("extended command");
-                // Extended command
-                // encoded_commands.push(
-                //     hex_concat(&[
-                //         command
-                //             .call
-                //             .contract
-                //             .interface
-                //             .get_sighash(&command.call.fragment),
-                //         &[
-                //             flags,
-                //             0,
-                //             0,
-                //             0,
-                //             0,
-                //             0,
-                //             0,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //             ret.low_u64() as u8,
-                //         ],
-                //         &command.call.contract,
-                //     ])
-                //     .to_string(),
-                // );
-                // encoded_commands.push(hex_concat(&[pad_array(&args, 32, 0xff)]));
+                let mut cmd = BytesMut::with_capacity(32);
+
+                cmd.put(&command.call.selector[..]);
+                cmd.put(&flags.bits().to_le_bytes()[..]);
+                cmd.put(&[0u8; 6][..]);
+                cmd.put_u8(ret.as_u128() as u8);
+                cmd.put(&command.call.address.to_fixed_bytes()[..]);
+
+                // push first command, indicating extended cmd
+                encoded_commands.push(cmd.to_vec().try_into().unwrap());
+
+                // use the next command for the actual args
+                args.resize(32, U256::from(0xff));
+                encoded_commands.push(Bytes::from(args.iter().map(|a| a.as_u128() as u8).collect::<Vec<_>>()));
             } else {
                 // Standard command
                 ////dbg!(&args, &ret, &flags);
