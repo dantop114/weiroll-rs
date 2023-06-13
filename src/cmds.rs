@@ -62,9 +62,8 @@ impl Literal {
         self.bytes.clone()
     }
 
-    pub fn new(dynamic: bool,
-        bytes: Bytes) -> Self {
-        Literal { dynamic, bytes}
+    pub fn new(dynamic: bool, bytes: Bytes) -> Self {
+        Literal { dynamic, bytes }
     }
 }
 
