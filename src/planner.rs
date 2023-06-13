@@ -232,7 +232,7 @@ impl Planner {
             if args.len() > 6 {
                 flags |= CommandFlags::EXTENDED_COMMAND;
             }
-            println!("{:?}", ps.state_expirations);
+
             if let Some(expr) = ps.state_expirations.get(&cmd_key) {
                 ps.free_slots.extend(expr.iter().copied())
             };
@@ -402,7 +402,6 @@ impl Planner {
                 .push(slot.into());
             literal_slot_map.insert(literal, slot.into());
         }
-        println!("{:?}", literal_slot_map);
 
         let mut ps = PlannerState {
             return_slot_map: Default::default(),
