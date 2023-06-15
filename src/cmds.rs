@@ -19,6 +19,8 @@ bitflags! {
         const STATICCALL = 0x02;
         // Specifies that a call should be made using the CALL opcode, and that the first argument will be the value to send
         const CALL_WITH_VALUE = 0x03;
+        // Specifies that a call should be made using the CALL opcode, and that the first argument will be the value to send
+        const CALL_WITH_VALUE_RETURN = 0x04;
         // A bitmask that selects calltype flags
         const CALLTYPE_MASK = 0x03;
         // Specifies that the return value of this call should be wrapped in a `bytes`. Internal use only.

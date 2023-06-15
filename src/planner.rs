@@ -222,6 +222,10 @@ impl Planner {
 
             let mut flags = command.call.flags;
 
+                if flags == CommandFlags::CALL_WITH_VALUE_RETURN {
+                    flags = CommandFlags::CALL_WITH_VALUE;
+                }
+
             let mut args = self.build_command_args(
                 command,
                 &ps.return_slot_map,
@@ -336,6 +340,13 @@ impl Planner {
                 if let Some(value) = command.call.value {
                     extra_args.push(value.into());
                 } else {
+                    return Err(WeirollError::MissingValue);
+                }
+            }
+            
+            if command.call.flags & CommandFlags::CALLTYPE_MASK == CommandFlags::CALL_WITH_VALUE_RETURN {
+                
+                if command.call.value.is_none() {
                     return Err(WeirollError::MissingValue);
                 }
             }
@@ -505,7 +516,7 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0x771602f703000102ffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            "0x771602f703000102ffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 .parse::<Bytes>()
                 .unwrap()
         );
@@ -513,6 +524,37 @@ mod tests {
         assert_eq!(state[0], value.encode());
         assert_eq!(state[1], U256::from(1).encode());
         assert_eq!(state[2], U256::from(2).encode());
+    }
+
+    #[test]
+    fn test_planner_add_with_value_return() {
+        let mut planner = Planner::default();
+        let value = U256::from(10_000_000_000_000_000_000_000u128);
+        planner
+            .call(
+                addr(),
+                CommandFlags::CALL_WITH_VALUE_RETURN,
+                AddCall::selector(),
+                vec![U256::from(1).into(), U256::from(2).into()],
+                ParamType::Uint(256),
+                Some(value),
+            )
+            .expect("can add call");
+        let (commands, state) = planner.plan().expect("plan");
+
+        println!("{:?}", commands);
+        println!("{:?}", state);
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0],
+            "0x771602f7030001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                .parse::<Bytes>()
+                .unwrap()
+        );
+        assert_eq!(state.len(), 2);
+        assert_eq!(state[0], U256::from(1).encode());
+        assert_eq!(state[1], U256::from(2).encode());
     }
 
     #[test]
