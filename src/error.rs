@@ -12,6 +12,9 @@ pub enum WeirollError {
     #[error("internal error: missing return slot")]
     MissingReturnSlot,
 
+    #[error("internal error: invalid reserved slot type")]
+    InvalidReservedSlot,
+
     #[error("internal error: invalid return slot")]
     InvalidReturnSlot,
 
