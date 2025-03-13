@@ -83,7 +83,7 @@ pub enum Value {
     Subplan(Planner),
 }
 
-impl<'a> From<ReturnValue> for Value {
+impl From<ReturnValue> for Value {
     fn from(value: ReturnValue) -> Self {
         Self::Return(value)
     }
