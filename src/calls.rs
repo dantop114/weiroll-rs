@@ -2,8 +2,6 @@ use ethers::{abi::ParamType, prelude::*};
 
 use crate::cmds::{CommandFlags, Value};
 
-// pub trait FunctionInput: AbiEncode + std::fmt::Debug {}
-
 #[derive(Debug, Clone)]
 pub struct FunctionCall {
     pub(crate) address: Address,
@@ -34,15 +32,3 @@ impl FunctionCall {
         self
     }
 }
-
-// impl<M: Middleware, D: Detokenize> From<ContractCall<M, D>> for FunctionCall {
-//     fn from(call: ContractCall<M, D>) -> Self {
-//         let args = Vec::new();
-//         Self {
-//             contract: *call.tx.to_addr().unwrap(),
-//             flags: CommandFlags::empty(),
-//             args,
-//             value: call.tx.value().cloned(),
-//         }
-//     }
-// }
