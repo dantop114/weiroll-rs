@@ -23,12 +23,16 @@ bitflags! {
         const CALL_WITH_VALUE_RETURN = 0x04;
         // A bitmask that selects calltype flags
         const CALLTYPE_MASK = 0x03;
-        // Specifies that the return value of this call should be wrapped in a `bytes`. Internal use only.
-        const TUPLE_RETURN = 0x40;
         // Specifies that this is an extended command, with an additional command word for indices. Internal use only.
-        const EXTENDED_COMMAND = 0x80;
+        const EXTENDED_COMMAND = 0x40;
+        // Specifies that the return value of this call should be wrapped in a `bytes`. Internal use only.
+        const TUPLE_RETURN = 0x80;
     }
 }
+
+pub const IDX_VARIABLE_LENGTH: u8 = 0x80;
+pub const IDX_END_OF_ARGS: u8 = 0xFF;
+pub const IDX_USE_STATE: u8 = 0xFE;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CommandType {
@@ -83,7 +87,7 @@ pub enum Value {
     Subplan(Planner),
 }
 
-impl<'a> From<ReturnValue> for Value {
+impl From<ReturnValue> for Value {
     fn from(value: ReturnValue) -> Self {
         Self::Return(value)
     }
