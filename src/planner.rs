@@ -1,5 +1,8 @@
 use crate::calls::FunctionCall;
-use crate::cmds::{Command, CommandFlags, CommandType, Literal, ReturnValue, Value};
+use crate::cmds::{
+    Command, CommandFlags, CommandType, Literal, ReturnValue, Value, IDX_END_OF_ARGS,
+    IDX_USE_STATE, IDX_VARIABLE_LENGTH,
+};
 use crate::error::WeirollError;
 
 use bytes::BufMut;
@@ -176,7 +179,7 @@ impl Planner {
                         return Err(WeirollError::MissingLiteralValue);
                     }
                 }
-                Value::State(_) => U256::from(0xFE),
+                Value::State(_) => U256::from(IDX_USE_STATE),
                 Value::Subplan(_) => {
                     // buildCommands has already built the subplan and put it in the last state slot
                     U256::from(state.len() - 1)
@@ -184,7 +187,7 @@ impl Planner {
             };
             // todo- correct??
             if arg.is_dynamic_type() {
-                slot |= U256::from(0x80);
+                slot |= U256::from(IDX_VARIABLE_LENGTH);
             }
 
             args.push(slot);
@@ -252,7 +255,7 @@ impl Planner {
             //     .collect();
 
             // Figure out where to put the return value
-            let mut ret = U256::from(0xff);
+            let mut ret = U256::from(IDX_END_OF_ARGS);
 
             if let Some(return_slot) = ps.return_slot_map.get(&cmd_key) {
                 println!("return slot: {:?}", return_slot);
@@ -281,12 +284,12 @@ impl Planner {
 
                 // todo: what's this?
                 if command.call.return_type.is_dynamic() {
-                    ret |= U256::from(0x80);
+                    ret |= U256::from(IDX_VARIABLE_LENGTH);
                 }
             } else if let CommandType::RawCall | CommandType::SubPlan = command.kind {
                 // todo: what's this?
                 // if command.call.fragment.outputs.len() == 1 {}
-                ret = U256::from(0xfe);
+                ret = U256::from(IDX_USE_STATE);
             }
 
             if (flags & CommandFlags::EXTENDED_COMMAND) == CommandFlags::EXTENDED_COMMAND {
@@ -302,7 +305,7 @@ impl Planner {
                 encoded_commands.push(cmd.to_vec().into());
 
                 // use the next command for the actual args
-                args.resize(32, U256::from(0xff));
+                args.resize(32, U256::from(IDX_END_OF_ARGS));
                 encoded_commands.push(Bytes::from(
                     args.iter().map(|a| a.as_u128() as u8).collect::<Vec<_>>(),
                 ));
@@ -316,7 +319,7 @@ impl Planner {
                     flags.bits().to_le_bytes().to_vec().into(),
                 ];
                 bytes.extend(
-                    pad_array(args.clone(), 6, U256::from(0xff))
+                    pad_array(args.clone(), 6, U256::from(IDX_END_OF_ARGS))
                         .iter()
                         .map(|o| u256_bytes(*o)[0..1].to_vec().into()),
                 );

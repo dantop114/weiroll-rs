@@ -30,6 +30,10 @@ bitflags! {
     }
 }
 
+pub const IDX_VARIABLE_LENGTH: u8 = 0x80;
+pub const IDX_END_OF_ARGS: u8 = 0xFF;
+pub const IDX_USE_STATE: u8 = 0xFE;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum CommandType {
     Call,
