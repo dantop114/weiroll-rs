@@ -1,7 +1,7 @@
 use crate::calls::FunctionCall;
 use crate::cmds::{
-    Command, CommandFlags, CommandType, Literal, ReturnValue, Value, IDX_END_OF_ARGS,
-    IDX_USE_STATE, IDX_VARIABLE_LENGTH,
+    Command, CommandFlags, CommandType, Literal, ReturnValue, Value, IDX_ARRAY_START,
+    IDX_DYNAMIC_END, IDX_END_OF_ARGS, IDX_TUPLE_START, IDX_USE_STATE, IDX_VARIABLE_LENGTH,
 };
 use crate::error::WeirollError;
 
@@ -80,6 +80,75 @@ impl Planner {
         Ok(ReturnValue { command, dynamic })
     }
 
+    fn get_slots(
+        arg: &Value,
+        return_slot_map: &HashMap<CommandKey, U256>,
+        literal_slot_map: &HashMap<Literal, U256>,
+    ) -> Result<Vec<U256>, WeirollError> {
+        let mut slots = vec![];
+
+        match arg {
+            Value::Array(values) | Value::Tuple(values) => {
+                if matches!(arg, Value::Array(_)) {
+                    slots.push(U256::from(IDX_ARRAY_START));
+
+                    let length = U256::from(values.len());
+
+                    if let Some(slot) = literal_slot_map.get(&length.into()) {
+                        slots.push(*slot);
+                    } else {
+                        return Err(WeirollError::MissingLiteralValue);
+                    }
+                }
+
+                if matches!(arg, Value::Tuple(_)) && arg.is_dynamic_type() {
+                    slots.push(U256::from(IDX_TUPLE_START));
+                }
+
+                for value in values.iter() {
+                    slots.extend(Self::get_slots(value, return_slot_map, literal_slot_map)?);
+                }
+
+                if matches!(arg, Value::Array(_))
+                    || (matches!(arg, Value::Tuple(_)) && arg.is_dynamic_type())
+                {
+                    slots.push(U256::from(IDX_DYNAMIC_END));
+                }
+            }
+            Value::Literal(literal) => {
+                if let Some(slot) = literal_slot_map.get(literal) {
+                    let mut slot = *slot;
+
+                    if arg.is_dynamic_type() {
+                        slot |= U256::from(IDX_VARIABLE_LENGTH);
+                    }
+
+                    slots.push(slot);
+                } else {
+                    return Err(WeirollError::MissingLiteralValue);
+                }
+            }
+            Value::Return(ret) => {
+                if let Some(slot) = return_slot_map.get(&ret.command) {
+                    let mut slot = *slot;
+
+                    if arg.is_dynamic_type() {
+                        slot |= U256::from(IDX_VARIABLE_LENGTH);
+                    }
+
+                    slots.push(slot);
+                } else {
+                    return Err(WeirollError::MissingReturnSlot);
+                }
+            }
+            Value::State(_) => {
+                slots.push(U256::from(IDX_USE_STATE) | U256::from(IDX_VARIABLE_LENGTH));
+            }
+        }
+
+        Ok(slots)
+    }
+
     fn build_command_args(
         &self,
         command: &Command,
@@ -99,29 +168,8 @@ impl Planner {
 
         let mut args = vec![];
         for arg in extra_args.iter().chain(in_args.into_iter()) {
-            let mut slot = match arg {
-                Value::Return(val) => {
-                    if let Some(slot) = return_slot_map.get(&val.command) {
-                        *slot
-                    } else {
-                        return Err(WeirollError::MissingReturnSlot);
-                    }
-                }
-                Value::Literal(val) => {
-                    if let Some(slot) = literal_slot_map.get(val) {
-                        *slot
-                    } else {
-                        return Err(WeirollError::MissingLiteralValue);
-                    }
-                }
-                Value::State(_) => U256::from(IDX_USE_STATE),
-            };
-            // todo- correct??
-            if arg.is_dynamic_type() {
-                slot |= U256::from(IDX_VARIABLE_LENGTH);
-            }
-
-            args.push(slot);
+            let slots = Self::get_slots(arg, return_slot_map, literal_slot_map)?;
+            args.extend(slots);
         }
 
         Ok(args)
@@ -206,23 +254,70 @@ impl Planner {
             } else {
                 // Standard command
 
-                let mut bytes = vec![
+                let mut encoded = vec![
                     command.call.selector.into(),
                     flags.bits().to_le_bytes().to_vec().into(),
                 ];
 
-                bytes.extend(
+                println!("args: {:?}", args);
+
+                encoded.extend(
                     pad_array(args.clone(), 6, U256::from(IDX_END_OF_ARGS))
                         .iter()
                         .map(|o| u256_bytes(*o)[0..1].to_vec().into()),
                 );
-                bytes.push(u256_bytes(ret)[0..1].to_vec().into());
-                bytes.push(command.call.address.to_fixed_bytes().into());
-                encoded_commands.push(concat_bytes(&bytes));
+                encoded.push(u256_bytes(ret)[0..1].to_vec().into());
+                encoded.push(command.call.address.to_fixed_bytes().into());
+                encoded_commands.push(concat_bytes(&encoded));
             }
         }
 
         Ok(encoded_commands)
+    }
+
+    fn set_visibility(
+        arg: &Value,
+        cmd_key: CommandKey,
+        literal_visibility: &mut Vec<(Literal, CommandKey)>,
+        command_visibility: &mut HashMap<CommandKey, CommandKey>,
+        seen: &mut HashSet<CommandKey>,
+    ) -> Result<(), WeirollError> {
+        match arg {
+            Value::Return(ret) => {
+                if seen.contains(&ret.command) {
+                    command_visibility.insert(ret.command, cmd_key);
+                } else {
+                    return Err(WeirollError::InvalidReturnSlot);
+                }
+            }
+            Value::Literal(lit) => {
+                // Remove old visibility (if exists)
+                literal_visibility.retain(|(l, _)| *l != *lit);
+                literal_visibility.push((lit.clone(), cmd_key));
+            }
+            Value::Array(values) | Value::Tuple(values) => {
+                // If it's a tuple we need to check if the tuple has a dynamic type in it.
+                if arg.is_dynamic_type() {
+                    let length_literal = U256::from(values.len()).into();
+                    // Remove old visibility (if exists)
+                    literal_visibility.retain(|(l, _)| *l != length_literal);
+                    literal_visibility.push((length_literal, cmd_key));
+                }
+
+                for value in values.iter() {
+                    Self::set_visibility(
+                        value,
+                        cmd_key,
+                        literal_visibility,
+                        command_visibility,
+                        seen,
+                    )?;
+                }
+            }
+            Value::State(_) => {}
+        }
+
+        Ok(())
     }
 
     fn preplan(
@@ -230,7 +325,6 @@ impl Planner {
         literal_visibility: &mut Vec<(Literal, CommandKey)>,
         command_visibility: &mut HashMap<CommandKey, CommandKey>,
         seen: &mut HashSet<CommandKey>,
-        _planners: &mut HashSet<Planner>,
     ) -> Result<(), WeirollError> {
         for (cmd_key, command) in &self.commands {
             let in_args = &command.call.args;
@@ -238,7 +332,7 @@ impl Planner {
 
             if command.call.flags & CommandFlags::CALLTYPE_MASK == CommandFlags::CALL_WITH_VALUE {
                 if let Some(value) = command.call.value {
-                    extra_args.push(value.into());
+                    extra_args.push(value.into())
                 } else {
                     return Err(WeirollError::MissingValue);
                 }
@@ -252,23 +346,12 @@ impl Planner {
             }
 
             for arg in extra_args.iter().chain(in_args.iter()) {
-                match arg {
-                    Value::Return(val) => {
-                        if seen.contains(&val.command) {
-                            command_visibility.insert(val.command, cmd_key);
-                        }
-                    }
-                    Value::Literal(val) => {
-                        // Remove old visibility (if exists)
-                        literal_visibility.retain(|(l, _)| *l != *val);
-                        literal_visibility.push((val.clone(), cmd_key));
-                    }
-                    Value::State(_) => {}
-                }
+                Self::set_visibility(arg, cmd_key, literal_visibility, command_visibility, seen)?;
             }
 
             seen.insert(cmd_key);
         }
+
         Ok(())
     }
 
@@ -286,7 +369,6 @@ impl Planner {
         self.preplan(
             &mut literal_visibility,
             &mut command_visibility,
-            &mut HashSet::new(),
             &mut HashSet::new(),
         )?;
 
@@ -359,7 +441,7 @@ mod tests {
     use ethers::abi::AbiEncode;
 
     use crate::bindings::{
-        math::AddCall,
+        math::{AddCall, SumCall},
         strings::{StrcatCall, StrlenCall},
     };
 
@@ -667,5 +749,81 @@ mod tests {
         assert_eq!(state.len(), 2);
         assert_eq!(state[0], "Hello, ".to_string().encode());
         assert_eq!(state[1], "world!".to_string().encode());
+    }
+
+    #[test]
+    fn test_planner_with_array() {
+        let mut planner = Planner::default();
+        let ret1 = planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                AddCall::selector(),
+                vec![U256::from(1).into(), U256::from(2).into()],
+                ParamType::Uint(256),
+                Some(U256::zero()),
+            )
+            .expect("can add call");
+
+        let ret2 = planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                AddCall::selector(),
+                vec![U256::from(3).into(), U256::from(4).into()],
+                ParamType::Uint(256),
+                Some(U256::zero()),
+            )
+            .expect("can add call");
+
+        planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                SumCall::selector(),
+                vec![Value::Array(vec![
+                    ret1.into(),
+                    ret2.into(),
+                    U256::from(5).into(),
+                ])],
+                ParamType::Uint(256),
+                Some(U256::zero()),
+            )
+            .expect("can add call");
+
+        let (commands, state) = planner.plan(vec![]).expect("plan");
+
+        println!("{:?}", commands);
+        println!("{:?}", state);
+
+        assert_eq!(commands.len(), 3);
+        assert_eq!(state.len(), 5);
+
+        assert_eq!(state[0], U256::from(1).encode());
+        assert_eq!(state[1], U256::from(2).encode());
+        assert_eq!(state[2], U256::from(4).encode());
+        assert_eq!(state[3], U256::from(3).encode());
+        assert_eq!(state[4], U256::from(5).encode());
+
+        assert_eq!(
+            commands[0],
+            "0x771602f7010001ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                .parse::<Bytes>()
+                .unwrap()
+        );
+
+        assert_eq!(
+            commands[1],
+            "0x771602f7010302ffffffff02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                .parse::<Bytes>()
+                .unwrap()
+        );
+
+        assert_eq!(
+            commands[2],
+            "0x0194db8e01fd03010204fbffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                .parse::<Bytes>()
+                .unwrap()
+        );
     }
 }
