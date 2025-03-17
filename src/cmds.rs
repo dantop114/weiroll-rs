@@ -38,7 +38,6 @@ pub const IDX_USE_STATE: u8 = 0xFE;
 pub enum CommandType {
     Call,
     RawCall,
-    SubPlan,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +83,6 @@ pub enum Value {
     Literal(Literal),
     Return(ReturnValue),
     State(Vec<Bytes>),
-    Subplan(Planner),
 }
 
 impl From<ReturnValue> for Value {
@@ -99,7 +97,6 @@ impl Value {
             Value::Literal(l) => l.dynamic,
             Value::Return(r) => r.dynamic,
             Value::State(_) => true,
-            Value::Subplan(_) => true,
         }
     }
 }

@@ -21,20 +21,8 @@ pub enum WeirollError {
     #[error("internal error: missing literal value")]
     MissingLiteralValue,
 
-    #[error("internal error: missing subplan")]
-    MissingSubplan,
-
     #[error("argument count mismatch")]
     ArgumentCountMismatch,
-
-    #[error("Subplans can only take one planner argument")]
-    MultipleSubplans,
-
-    #[error("Subplans can only take one state argument")]
-    MultipleState,
-
-    #[error("Subplans must take planner and state arguments")]
-    MissingStateOrSubplan,
 
     #[error("integer overflow")]
     InternalOverflow(#[from] std::num::TryFromIntError),
