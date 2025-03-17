@@ -23,10 +23,10 @@ bitflags! {
         const CALL_WITH_VALUE_RETURN = 0x04;
         // A bitmask that selects calltype flags
         const CALLTYPE_MASK = 0x03;
-        // Specifies that the return value of this call should be wrapped in a `bytes`. Internal use only.
-        const TUPLE_RETURN = 0x40;
         // Specifies that this is an extended command, with an additional command word for indices. Internal use only.
-        const EXTENDED_COMMAND = 0x80;
+        const EXTENDED_COMMAND = 0x40;
+        // Specifies that the return value of this call should be wrapped in a `bytes`. Internal use only.
+        const TUPLE_RETURN = 0x80;
     }
 }
 
