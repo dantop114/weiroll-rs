@@ -7,7 +7,7 @@ use crate::error::WeirollError;
 
 use bytes::BufMut;
 use bytes::BytesMut;
-use ethers::abi::{AbiEncode, ParamType};
+use ethers::abi::ParamType;
 use ethers::prelude::*;
 use slotmap::{DefaultKey, HopSlotMap};
 use std::collections::{HashMap, HashSet};
@@ -85,7 +85,6 @@ impl Planner {
         command: &Command,
         return_slot_map: &HashMap<CommandKey, U256>,
         literal_slot_map: &HashMap<Literal, U256>,
-        state: &[Bytes],
     ) -> Result<Vec<U256>, WeirollError> {
         let in_args = Vec::from_iter(command.call.args.iter());
         let mut extra_args: Vec<Value> = vec![];
@@ -139,12 +138,8 @@ impl Planner {
                 flags = CommandFlags::CALL_WITH_VALUE;
             }
 
-            let mut args = self.build_command_args(
-                command,
-                &ps.return_slot_map,
-                &ps.literal_slot_map,
-                &ps.state,
-            )?;
+            let mut args =
+                self.build_command_args(command, &ps.return_slot_map, &ps.literal_slot_map)?;
 
             if args.len() > 6 {
                 flags |= CommandFlags::EXTENDED_COMMAND;
@@ -361,6 +356,8 @@ impl Planner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethers::abi::AbiEncode;
+
     use crate::bindings::{
         math::AddCall,
         strings::{StrcatCall, StrlenCall},
