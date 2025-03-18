@@ -30,8 +30,8 @@ bitflags! {
 }
 
 pub const IDX_DYNAMIC_END: u8 = 0xFB;
+pub const IDX_TUPLE_START: u8 = 0xFC;
 pub const IDX_ARRAY_START: u8 = 0xFD;
-pub const IDX_TUPLE_START: u8 = 0xFE;
 
 pub const IDX_VARIABLE_LENGTH: u8 = 0x80;
 pub const IDX_END_OF_ARGS: u8 = 0xFF;
