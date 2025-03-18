@@ -29,6 +29,10 @@ bitflags! {
     }
 }
 
+pub const IDX_DYNAMIC_END: u8 = 0xFB;
+pub const IDX_TUPLE_START: u8 = 0xFC;
+pub const IDX_ARRAY_START: u8 = 0xFD;
+
 pub const IDX_VARIABLE_LENGTH: u8 = 0x80;
 pub const IDX_END_OF_ARGS: u8 = 0xFF;
 pub const IDX_USE_STATE: u8 = 0xFE;
@@ -81,6 +85,8 @@ impl Hash for Literal {
 pub enum Value {
     Literal(Literal),
     Return(ReturnValue),
+    Array(Vec<Value>),
+    Tuple(Vec<Value>),
     State(Vec<Bytes>),
 }
 
@@ -93,6 +99,8 @@ impl From<ReturnValue> for Value {
 impl Value {
     pub fn is_dynamic_type(&self) -> bool {
         match self {
+            Value::Tuple(values) => values.iter().any(|v| v.is_dynamic_type()),
+            Value::Array(_) => true, // we return true because we only use this type for dynamic arrays
             Value::Literal(l) => l.dynamic,
             Value::Return(r) => r.dynamic,
             Value::State(_) => true,
