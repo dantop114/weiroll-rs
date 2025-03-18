@@ -62,7 +62,13 @@ impl Planner {
         return_type: ParamType,
         value: Option<U256>,
     ) -> Result<ReturnValue, WeirollError> {
-        let dynamic = return_type.is_dynamic();
+        let (dynamic, return_type) =
+            if (command_flag & CommandFlags::TUPLE_RETURN) == CommandFlags::TUPLE_RETURN {
+                (true, ParamType::Bytes)
+            } else {
+                (return_type.is_dynamic(), return_type)
+            };
+
         let call = FunctionCall {
             address,
             flags: command_flag,
@@ -437,6 +443,8 @@ impl Planner {
 mod tests {
     use super::*;
     use ethers::abi::AbiEncode;
+
+    use std::str::FromStr;
 
     use crate::bindings::{
         math::{AddCall, SumCall},
@@ -823,5 +831,63 @@ mod tests {
                 .parse::<Bytes>()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn test_planner_flashloan_module() {
+        let mut planner = Planner::default();
+
+        planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                [0x7b, 0xbe, 0xfc, 0x8d],
+                vec![
+                    Value::Tuple(vec![
+                        U256::from(7).into(), // positionId
+                        false.into(),         // isDebt
+                        U256::from(3).into(), // instruction type
+                        Value::Array(vec![]), // affected tokens
+                        Value::Array(vec![]), // commands
+                        Value::Array(vec![]), // state
+                        U256::from(0).into(), // state bitmap
+                        Value::Array(vec![    // merkle proof
+                        H256::from_str(
+                            "0xeec26e31960565573dd3a3c006488ebac583592f741b1d5149711f569c79a456",
+                        )
+                        .unwrap()
+                        .into(),
+                        H256::from_str(
+                            "0xaf800c237b500dd633b370b7e38f5273c44e2b1903d6b27f462aabab36c2d3e2",
+                        )
+                        .unwrap()
+                        .into(),
+                        H256::from_str(
+                            "0xddf902b24366aee097d551ff3ab0f7baf21988305fce1115f4ce00679a90a65d",
+                        )
+                        .unwrap()
+                        .into(),
+                        H256::from_str(
+                            "0xb8456de2a9ef23360534d4dba17c574f93f6c3f1dc73368e7800811b49db736b",
+                        )
+                        .unwrap()
+                        .into(),
+                    ]),
+                    ]),
+                    "0xe54a55121A47451c5727ADBAF9b9FC1643477e25"
+                        .parse::<Address>()
+                        .unwrap()
+                        .into(), // token
+                    U256::exp10(18).into(), // amount
+                ],
+                ParamType::Uint(256),
+                None,
+            )
+            .unwrap();
+
+        let (commands, state) = planner.plan(vec![]).unwrap();
+
+        println!("{:?}", commands);
+        println!("{:?}", state);
     }
 }
