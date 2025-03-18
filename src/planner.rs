@@ -253,19 +253,17 @@ impl Planner {
                 ));
             } else {
                 // Standard command
-
                 let mut encoded = vec![
                     command.call.selector.into(),
                     flags.bits().to_le_bytes().to_vec().into(),
                 ];
-
-                println!("args: {:?}", args);
 
                 encoded.extend(
                     pad_array(args.clone(), 6, U256::from(IDX_END_OF_ARGS))
                         .iter()
                         .map(|o| u256_bytes(*o)[0..1].to_vec().into()),
                 );
+
                 encoded.push(u256_bytes(ret)[0..1].to_vec().into());
                 encoded.push(command.call.address.to_fixed_bytes().into());
                 encoded_commands.push(concat_bytes(&encoded));
@@ -297,7 +295,7 @@ impl Planner {
             }
             Value::Array(values) | Value::Tuple(values) => {
                 // If it's a tuple we need to check if the tuple has a dynamic type in it.
-                if arg.is_dynamic_type() {
+                if matches!(arg, Value::Array(_)) {
                     let length_literal = U256::from(values.len()).into();
                     // Remove old visibility (if exists)
                     literal_visibility.retain(|(l, _)| *l != length_literal);
