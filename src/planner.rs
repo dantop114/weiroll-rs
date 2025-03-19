@@ -188,10 +188,6 @@ impl Planner {
         for (cmd_key, command) in &self.commands {
             let mut flags = command.call.flags;
 
-            if flags == CommandFlags::CALL_WITH_VALUE_RETURN {
-                flags = CommandFlags::CALL_WITH_VALUE;
-            }
-
             let mut args =
                 self.build_command_args(command, &ps.return_slot_map, &ps.literal_slot_map)?;
 
@@ -340,13 +336,6 @@ impl Planner {
                 } else {
                     return Err(WeirollError::MissingValue);
                 }
-            }
-
-            if command.call.flags & CommandFlags::CALLTYPE_MASK
-                == CommandFlags::CALL_WITH_VALUE_RETURN
-                && command.call.value.is_none()
-            {
-                return Err(WeirollError::MissingValue);
             }
 
             for arg in extra_args.iter().chain(in_args.iter()) {
@@ -531,7 +520,7 @@ mod tests {
         planner
             .call(
                 addr(),
-                CommandFlags::CALL_WITH_VALUE_RETURN,
+                CommandFlags::CALL_WITH_VALUE,
                 AddCall::selector(),
                 vec![U256::from(1).into(), U256::from(2).into()],
                 ParamType::Uint(256),
