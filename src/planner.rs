@@ -21,35 +21,12 @@ pub struct Planner {
 
 #[derive(Debug, Default)]
 pub struct PlannerState {
-    return_slot_map: HashMap<CommandKey, U256>,
-    literal_slot_map: HashMap<Literal, U256>,
-    free_slots: Vec<U256>,
-    state_expirations: HashMap<CommandKey, Vec<U256>>,
+    return_slot_map: HashMap<CommandKey, u8>,
+    literal_slot_map: HashMap<Literal, u8>,
+    free_slots: Vec<u8>,
+    state_expirations: HashMap<CommandKey, Vec<u8>>,
     command_visibility: HashMap<CommandKey, CommandKey>,
     state: Vec<Bytes>,
-}
-
-fn u256_bytes(u: U256) -> Bytes {
-    let mut bytes = [0u8; 32];
-    u.to_little_endian(&mut bytes);
-    bytes.into()
-}
-
-fn concat_bytes(items: &[Bytes]) -> Bytes {
-    let mut result = Vec::<u8>::new();
-    for item in items {
-        result.extend_from_slice(&item.0)
-    }
-    result.into()
-}
-
-fn pad_array<T>(array: Vec<T>, len: usize, value: T) -> Vec<T>
-where
-    T: Clone,
-{
-    let mut out = array;
-    out.resize(len, value);
-    out
 }
 
 impl Planner {
@@ -86,17 +63,48 @@ impl Planner {
         Ok(ReturnValue { command, dynamic })
     }
 
+    pub fn raw_call(
+        &mut self,
+        address: Address,
+        command_flag: CommandFlags,
+        selector: [u8; 4],
+        args: Vec<Value>,
+        return_type: ParamType,
+        value: Option<U256>,
+    ) -> Result<(), WeirollError> {
+        let return_type = match &return_type {
+            ParamType::Array(inner_type) if **inner_type == ParamType::Bytes => return_type,
+            _ => return Err(WeirollError::InvalidReturnType),
+        };
+
+        let call = FunctionCall {
+            address,
+            flags: command_flag,
+            value,
+            selector,
+            args,
+            return_type,
+        };
+
+        self.commands.insert(Command {
+            call,
+            kind: CommandType::RawCall,
+        });
+
+        Ok(())
+    }
+
     fn get_slots(
         arg: &Value,
-        return_slot_map: &HashMap<CommandKey, U256>,
-        literal_slot_map: &HashMap<Literal, U256>,
-    ) -> Result<Vec<U256>, WeirollError> {
+        return_slot_map: &HashMap<CommandKey, u8>,
+        literal_slot_map: &HashMap<Literal, u8>,
+    ) -> Result<Vec<u8>, WeirollError> {
         let mut slots = vec![];
 
         match arg {
             Value::Array(values) | Value::Tuple(values) => {
                 if matches!(arg, Value::Array(_)) {
-                    slots.push(U256::from(IDX_ARRAY_START));
+                    slots.push(IDX_ARRAY_START);
 
                     let length = U256::from(values.len());
 
@@ -108,7 +116,7 @@ impl Planner {
                 }
 
                 if matches!(arg, Value::Tuple(_)) && arg.is_dynamic_type() {
-                    slots.push(U256::from(IDX_TUPLE_START));
+                    slots.push(IDX_TUPLE_START);
                 }
 
                 for value in values.iter() {
@@ -118,7 +126,7 @@ impl Planner {
                 if matches!(arg, Value::Array(_))
                     || (matches!(arg, Value::Tuple(_)) && arg.is_dynamic_type())
                 {
-                    slots.push(U256::from(IDX_DYNAMIC_END));
+                    slots.push(IDX_DYNAMIC_END);
                 }
             }
             Value::Literal(literal) => {
@@ -126,7 +134,7 @@ impl Planner {
                     let mut slot = *slot;
 
                     if arg.is_dynamic_type() {
-                        slot |= U256::from(IDX_VARIABLE_LENGTH);
+                        slot |= IDX_VARIABLE_LENGTH;
                     }
 
                     slots.push(slot);
@@ -139,7 +147,7 @@ impl Planner {
                     let mut slot = *slot;
 
                     if arg.is_dynamic_type() {
-                        slot |= U256::from(IDX_VARIABLE_LENGTH);
+                        slot |= IDX_VARIABLE_LENGTH;
                     }
 
                     slots.push(slot);
@@ -148,7 +156,7 @@ impl Planner {
                 }
             }
             Value::State(_) => {
-                slots.push(U256::from(IDX_USE_STATE) | U256::from(IDX_VARIABLE_LENGTH));
+                slots.push(IDX_USE_STATE | IDX_VARIABLE_LENGTH);
             }
         }
 
@@ -158,9 +166,9 @@ impl Planner {
     fn build_command_args(
         &self,
         command: &Command,
-        return_slot_map: &HashMap<CommandKey, U256>,
-        literal_slot_map: &HashMap<Literal, U256>,
-    ) -> Result<Vec<U256>, WeirollError> {
+        return_slot_map: &HashMap<CommandKey, u8>,
+        literal_slot_map: &HashMap<Literal, u8>,
+    ) -> Result<Vec<u8>, WeirollError> {
         let in_args = Vec::from_iter(command.call.args.iter());
         let mut extra_args: Vec<Value> = vec![];
 
@@ -200,17 +208,17 @@ impl Planner {
             };
 
             // Figure out where to put the return value
-            let mut ret = U256::from(IDX_END_OF_ARGS);
+            let mut ret = IDX_END_OF_ARGS;
 
             if let Some(return_slot) = ps.return_slot_map.get(&cmd_key) {
-                println!("return slot: {:?}", return_slot);
                 ret = *return_slot;
             } else if ps.command_visibility.contains_key(&cmd_key) {
                 if matches!(command.kind, CommandType::RawCall) {
                     return Err(WeirollError::InvalidReturnSlot);
                 }
 
-                ret = U256::from(ps.state.len());
+                ret = ps.state.len() as u8;
+
                 if let Some(slot) = ps.free_slots.pop() {
                     ret = slot;
                 }
@@ -223,17 +231,15 @@ impl Planner {
                     .or_default()
                     .push(ret);
 
-                if ret == U256::from(ps.state.len()) {
+                if ret == ps.state.len() as u8 {
                     ps.state.push(Bytes::default());
                 }
 
                 if command.call.return_type.is_dynamic() {
-                    ret |= U256::from(IDX_VARIABLE_LENGTH);
+                    ret |= IDX_VARIABLE_LENGTH;
                 }
             } else if matches!(command.kind, CommandType::RawCall) {
-                // todo: what's this?
-                // if command.call.fragment.outputs.len() == 1 {}
-                ret = U256::from(IDX_USE_STATE);
+                ret = IDX_USE_STATE;
             }
 
             if (flags & CommandFlags::EXTENDED_COMMAND) == CommandFlags::EXTENDED_COMMAND {
@@ -242,33 +248,30 @@ impl Planner {
                 cmd.put(&command.call.selector[..]);
                 cmd.put(&flags.bits().to_le_bytes()[..]);
                 cmd.put(&[0u8; 6][..]);
-                cmd.put_u8(ret.as_u128() as u8);
+                cmd.put_u8(ret);
                 cmd.put(&command.call.address.to_fixed_bytes()[..]);
 
                 // push first command, indicating extended cmd
                 encoded_commands.push(cmd.to_vec().into());
 
                 // use the next command for the actual args
-                args.resize(32, U256::from(IDX_END_OF_ARGS));
-                encoded_commands.push(Bytes::from(
-                    args.iter().map(|a| a.as_u128() as u8).collect::<Vec<_>>(),
-                ));
+                args.push(IDX_END_OF_ARGS);
+                args.resize(32, 0);
+
+                encoded_commands.push(Bytes::from(args.to_vec()));
             } else {
-                // Standard command
-                let mut encoded = vec![
-                    command.call.selector.into(),
-                    flags.bits().to_le_bytes().to_vec().into(),
-                ];
+                let mut cmd = BytesMut::with_capacity(32);
 
-                encoded.extend(
-                    pad_array(args.clone(), 6, U256::from(IDX_END_OF_ARGS))
-                        .iter()
-                        .map(|o| u256_bytes(*o)[0..1].to_vec().into()),
-                );
+                args.push(IDX_END_OF_ARGS);
+                args.resize(6, 0);
 
-                encoded.push(u256_bytes(ret)[0..1].to_vec().into());
-                encoded.push(command.call.address.to_fixed_bytes().into());
-                encoded_commands.push(concat_bytes(&encoded));
+                cmd.put(&command.call.selector[..]);
+                cmd.put(&flags.bits().to_le_bytes()[..]);
+                cmd.put(&args[..]);
+                cmd.put_u8(ret);
+                cmd.put(&command.call.address.to_fixed_bytes()[..]);
+
+                encoded_commands.push(cmd.to_vec().into());
             }
         }
 
@@ -365,27 +368,25 @@ impl Planner {
             &mut HashSet::new(),
         )?;
 
-        //dbg!(&literal_visibility, &command_visibility);
-
         // Maps from commands to the slots that expire on execution (if any)
-        let mut state_expirations: HashMap<CommandKey, Vec<U256>> = Default::default();
+        let mut state_expirations: HashMap<CommandKey, Vec<u8>> = Default::default();
 
         // Tracks the state slot each literal is stored in
-        let mut literal_slot_map: HashMap<Literal, U256> = Default::default();
+        let mut literal_slot_map: HashMap<Literal, u8> = Default::default();
 
         let mut state: Vec<Bytes> = Default::default();
 
-        let mut return_slot_map: HashMap<CommandKey, U256> = Default::default();
+        let mut return_slot_map: HashMap<CommandKey, u8> = Default::default();
 
         for (slot, value) in reserved_slots.iter().enumerate() {
             match value {
                 Value::Literal(literal) => {
                     state.push(literal.bytes());
-                    literal_slot_map.insert(literal.clone(), slot.into());
+                    literal_slot_map.insert(literal.clone(), slot as u8);
                 }
                 Value::Return(ret) => {
                     state.push(Bytes::default());
-                    return_slot_map.insert(ret.command, slot.into());
+                    return_slot_map.insert(ret.command, slot as u8);
                 }
                 _ => {
                     return Err(WeirollError::InvalidReservedSlot);
@@ -396,17 +397,19 @@ impl Planner {
         // Prepopulate the state and state expirations with literals
         for (literal, last_command) in literal_visibility {
             if literal_slot_map.contains_key(&literal) {
-                println!("literal already exists: {:?}", literal);
                 continue;
             }
 
             let slot = state.len();
+
             state.push(literal.bytes());
+
             state_expirations
                 .entry(last_command)
                 .or_default()
-                .push(slot.into());
-            literal_slot_map.insert(literal, slot.into());
+                .push(slot as u8);
+
+            literal_slot_map.insert(literal, slot as u8);
         }
 
         let mut ps = PlannerState {
@@ -419,10 +422,6 @@ impl Planner {
         };
 
         let encoded_commands = self.build_commands(&mut ps)?;
-
-        dbg!(&encoded_commands);
-
-        // dbg!(&state);
 
         Ok((encoded_commands, ps.state))
     }
