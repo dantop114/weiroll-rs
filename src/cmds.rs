@@ -73,10 +73,10 @@ impl<T: SolValue> From<T> for Literal {
     fn from(token: T) -> Self {
         let value_type = DynSolType::parse(token.sol_name()).unwrap();
         let dynamic = is_type_dynamic(&value_type);
-        let mut bytes = token.abi_encode();
 
         // if the type is dynamic, we need to remove the starting/length prefix
         // because it will be handled by the weiroll virtual machine
+        let mut bytes = token.abi_encode();
         if dynamic {
             bytes = bytes[32..].to_vec();
         }
@@ -85,7 +85,7 @@ impl<T: SolValue> From<T> for Literal {
     }
 }
 
-impl<T: SolValue + Clone> From<T> for Value {
+impl<T: SolValue> From<T> for Value {
     fn from(token: T) -> Self {
         Self::Literal(token.into())
     }
@@ -181,25 +181,38 @@ mod tests {
     use std::str::FromStr;
 
     use alloy::primitives::U256;
-    use alloy::sol_types::SolValue;
 
     #[test]
     fn test_literal_from_u256_sol_value() {
         let value = U256::from(1);
+        let encoded_value = Bytes::from(vec![
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x01, // value padded to 32 bytes
+        ]);
+
         let literal: Literal = value.into();
 
-        println!("{:?}", literal);
-
         assert!(!literal.dynamic());
-        assert_eq!(literal.bytes_cloned(), value.abi_encode());
+        assert_eq!(literal.bytes_cloned(), encoded_value);
     }
 
     #[test]
     fn test_literal_from_bytes_sol_value() {
         let value = Bytes::from_str("0x1234567890abcdef").unwrap();
+
+        let encoded_value = Bytes::from(vec![
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x08, // length padded to 32 bytes
+            0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, // value padded to 32 bytes
+        ]);
+
         let literal: Literal = value.clone().into();
 
         assert!(literal.dynamic());
-        assert_eq!(literal.bytes_cloned(), value.abi_encode()[32..].to_vec());
+        assert_eq!(literal.bytes_cloned(), encoded_value);
     }
 }
