@@ -1,4 +1,3 @@
-pub mod bindings;
 pub mod calls;
 pub mod cmds;
 mod error;

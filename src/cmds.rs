@@ -1,7 +1,11 @@
 use crate::calls::FunctionCall;
+
 use bitflags::bitflags;
-use ethers::abi::{AbiEncode, Tokenizable};
-use ethers::prelude::Bytes;
+
+use alloy::dyn_abi::DynSolType;
+use alloy::primitives::Bytes;
+use alloy::sol_types::SolValue;
+
 use slotmap::DefaultKey;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -35,47 +39,61 @@ pub const IDX_VARIABLE_LENGTH: u8 = 0x80;
 pub const IDX_END_OF_ARGS: u8 = 0xFF;
 pub const IDX_USE_STATE: u8 = 0xFE;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum CommandType {
     Call,
     RawCall,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Literal {
+    value: Bytes,
     dynamic: bool,
-    bytes: Bytes,
-}
-impl Eq for Literal {}
-
-impl<T: Tokenizable + AbiEncode + Clone> From<T> for Literal {
-    fn from(token: T) -> Self {
-        Literal {
-            dynamic: token.clone().into_token().is_dynamic(),
-            bytes: token.encode().into(),
-        }
-    }
-}
-
-impl<T: Tokenizable + AbiEncode + Clone> From<T> for Value {
-    fn from(token: T) -> Self {
-        Value::Literal(token.into())
-    }
 }
 
 impl Literal {
-    pub fn bytes(&self) -> Bytes {
-        self.bytes.clone()
+    pub fn new(value: Bytes, dynamic: bool) -> Self {
+        Self { value, dynamic }
     }
 
-    pub fn new(dynamic: bool, bytes: Bytes) -> Self {
-        Literal { dynamic, bytes }
+    pub fn dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    pub fn bytes(&self) -> &Bytes {
+        &self.value
+    }
+
+    pub fn bytes_cloned(&self) -> Bytes {
+        self.value.clone()
+    }
+}
+
+impl<T: SolValue> From<T> for Literal {
+    fn from(token: T) -> Self {
+        let value_type = DynSolType::parse(token.sol_name()).unwrap();
+        let dynamic = is_type_dynamic(&value_type);
+        let mut bytes = token.abi_encode();
+
+        // if the type is dynamic, we need to remove the starting/length prefix
+        // because it will be handled by the weiroll virtual machine
+        if dynamic {
+            bytes = bytes[32..].to_vec();
+        }
+
+        Self::new(bytes.into(), dynamic)
+    }
+}
+
+impl<T: SolValue + Clone> From<T> for Value {
+    fn from(token: T) -> Self {
+        Self::Literal(token.into())
     }
 }
 
 impl Hash for Literal {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.bytes.hash(state)
+        self.value.hash(state);
     }
 }
 
@@ -88,6 +106,16 @@ pub enum Value {
     State(Vec<Bytes>),
 }
 
+pub fn is_type_dynamic(ty: &DynSolType) -> bool {
+    match ty {
+        DynSolType::Bytes | DynSolType::String | DynSolType::Array(_) => true,
+        DynSolType::FixedArray(ty, _) => is_type_dynamic(ty),
+        DynSolType::Tuple(types) => types.iter().any(is_type_dynamic),
+        DynSolType::CustomStruct { tuple, .. } => tuple.iter().any(is_type_dynamic),
+        _ => false,
+    }
+}
+
 impl From<ReturnValue> for Value {
     fn from(value: ReturnValue) -> Self {
         Self::Return(value)
@@ -95,12 +123,12 @@ impl From<ReturnValue> for Value {
 }
 
 impl Value {
-    pub fn is_dynamic_type(&self) -> bool {
+    pub fn is_dynamic(&self) -> bool {
         match self {
-            Value::Tuple(values) => values.iter().any(|v| v.is_dynamic_type()),
-            Value::Array(_) => true, // we return true because we only use this type for dynamic arrays
-            Value::Literal(l) => l.dynamic,
-            Value::Return(r) => r.dynamic,
+            Value::Tuple(values) => values.iter().any(|v| v.is_dynamic()),
+            Value::Array(_) => true,
+            Value::Literal(l) => l.dynamic(),
+            Value::Return(r) => r.dynamic(),
             Value::State(_) => true,
         }
     }
@@ -108,12 +136,70 @@ impl Value {
 
 #[derive(Debug, Clone)]
 pub struct Command {
-    pub(crate) call: FunctionCall,
-    pub(crate) kind: CommandType,
+    call: FunctionCall,
+    kind: CommandType,
+}
+
+impl Command {
+    pub fn new(call: FunctionCall, kind: CommandType) -> Self {
+        Self { call, kind }
+    }
+
+    pub fn call(&self) -> &FunctionCall {
+        &self.call
+    }
+
+    pub fn kind(&self) -> &CommandType {
+        &self.kind
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ReturnValue {
-    pub(crate) dynamic: bool,
-    pub(crate) command: DefaultKey,
+    dynamic: bool,
+    command: DefaultKey,
+}
+
+impl ReturnValue {
+    pub fn new(command: DefaultKey, dynamic: bool) -> Self {
+        Self { dynamic, command }
+    }
+
+    pub fn command(&self) -> DefaultKey {
+        self.command
+    }
+
+    pub fn dynamic(&self) -> bool {
+        self.dynamic
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::str::FromStr;
+
+    use alloy::primitives::U256;
+    use alloy::sol_types::SolValue;
+
+    #[test]
+    fn test_literal_from_u256_sol_value() {
+        let value = U256::from(1);
+        let literal: Literal = value.into();
+
+        println!("{:?}", literal);
+
+        assert!(!literal.dynamic());
+        assert_eq!(literal.bytes_cloned(), value.abi_encode());
+    }
+
+    #[test]
+    fn test_literal_from_bytes_sol_value() {
+        let value = Bytes::from_str("0x1234567890abcdef").unwrap();
+        let literal: Literal = value.clone().into();
+
+        assert!(literal.dynamic());
+        assert_eq!(literal.bytes_cloned(), value.abi_encode()[32..].to_vec());
+    }
 }
