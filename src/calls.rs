@@ -1,4 +1,5 @@
-use ethers::{abi::ParamType, prelude::*};
+use alloy::dyn_abi::DynSolType;
+use alloy::primitives::{Address, U256};
 
 use crate::cmds::{CommandFlags, Value};
 
@@ -9,7 +10,7 @@ pub struct FunctionCall {
     pub(crate) flags: CommandFlags,
     pub(crate) value: Option<U256>,
     pub(crate) args: Vec<Value>,
-    pub(crate) return_type: ParamType,
+    pub(crate) return_type: DynSolType,
 }
 
 impl FunctionCall {

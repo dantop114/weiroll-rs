@@ -1,14 +1,17 @@
 use crate::calls::FunctionCall;
 use crate::cmds::{
-    Command, CommandFlags, CommandType, Literal, ReturnValue, Value, IDX_ARRAY_START,
-    IDX_DYNAMIC_END, IDX_END_OF_ARGS, IDX_TUPLE_START, IDX_USE_STATE, IDX_VARIABLE_LENGTH,
+    is_type_dynamic, Command, CommandFlags, CommandType, Literal, ReturnValue, Value,
+    IDX_ARRAY_START, IDX_DYNAMIC_END, IDX_END_OF_ARGS, IDX_TUPLE_START, IDX_USE_STATE,
+    IDX_VARIABLE_LENGTH,
 };
 use crate::error::WeirollError;
 
 use bytes::BufMut;
 use bytes::BytesMut;
-use ethers::abi::ParamType;
-use ethers::prelude::*;
+
+use alloy::dyn_abi::DynSolType;
+use alloy::primitives::{Address, Bytes, U256};
+
 use slotmap::{DefaultKey, HopSlotMap};
 use std::collections::{HashMap, HashSet};
 
@@ -36,14 +39,14 @@ impl Planner {
         command_flag: CommandFlags,
         selector: [u8; 4],
         args: Vec<Value>,
-        return_type: ParamType,
+        return_type: DynSolType,
         value: Option<U256>,
     ) -> Result<ReturnValue, WeirollError> {
         let (dynamic, return_type) =
             if (command_flag & CommandFlags::TUPLE_RETURN) == CommandFlags::TUPLE_RETURN {
-                (true, ParamType::Bytes)
+                (true, DynSolType::Bytes)
             } else {
-                (return_type.is_dynamic(), return_type)
+                (is_type_dynamic(&return_type), return_type)
             };
 
         let call = FunctionCall {
@@ -55,12 +58,9 @@ impl Planner {
             return_type,
         };
 
-        let command = self.commands.insert(Command {
-            call,
-            kind: CommandType::Call,
-        });
+        let command = self.commands.insert(Command::new(call, CommandType::Call));
 
-        Ok(ReturnValue { command, dynamic })
+        Ok(ReturnValue::new(command, dynamic))
     }
 
     pub fn raw_call(
@@ -69,11 +69,11 @@ impl Planner {
         command_flag: CommandFlags,
         selector: [u8; 4],
         args: Vec<Value>,
-        return_type: ParamType,
+        return_type: DynSolType,
         value: Option<U256>,
     ) -> Result<(), WeirollError> {
         let return_type = match &return_type {
-            ParamType::Array(inner_type) if **inner_type == ParamType::Bytes => return_type,
+            DynSolType::Array(inner_type) if **inner_type == DynSolType::Bytes => return_type,
             _ => return Err(WeirollError::InvalidReturnType),
         };
 
@@ -86,10 +86,8 @@ impl Planner {
             return_type,
         };
 
-        self.commands.insert(Command {
-            call,
-            kind: CommandType::RawCall,
-        });
+        self.commands
+            .insert(Command::new(call, CommandType::RawCall));
 
         Ok(())
     }
@@ -115,7 +113,7 @@ impl Planner {
                     }
                 }
 
-                if matches!(arg, Value::Tuple(_)) && arg.is_dynamic_type() {
+                if matches!(arg, Value::Tuple(_)) && arg.is_dynamic() {
                     slots.push(IDX_TUPLE_START);
                 }
 
@@ -124,7 +122,7 @@ impl Planner {
                 }
 
                 if matches!(arg, Value::Array(_))
-                    || (matches!(arg, Value::Tuple(_)) && arg.is_dynamic_type())
+                    || (matches!(arg, Value::Tuple(_)) && arg.is_dynamic())
                 {
                     slots.push(IDX_DYNAMIC_END);
                 }
@@ -133,7 +131,7 @@ impl Planner {
                 if let Some(slot) = literal_slot_map.get(literal) {
                     let mut slot = *slot;
 
-                    if arg.is_dynamic_type() {
+                    if arg.is_dynamic() {
                         slot |= IDX_VARIABLE_LENGTH;
                     }
 
@@ -143,10 +141,10 @@ impl Planner {
                 }
             }
             Value::Return(ret) => {
-                if let Some(slot) = return_slot_map.get(&ret.command) {
+                if let Some(slot) = return_slot_map.get(&ret.command()) {
                     let mut slot = *slot;
 
-                    if arg.is_dynamic_type() {
+                    if arg.is_dynamic() {
                         slot |= IDX_VARIABLE_LENGTH;
                     }
 
@@ -169,11 +167,11 @@ impl Planner {
         return_slot_map: &HashMap<CommandKey, u8>,
         literal_slot_map: &HashMap<Literal, u8>,
     ) -> Result<Vec<u8>, WeirollError> {
-        let in_args = Vec::from_iter(command.call.args.iter());
+        let in_args = Vec::from_iter(command.call().args.iter());
         let mut extra_args: Vec<Value> = vec![];
 
-        if command.call.flags & CommandFlags::CALLTYPE_MASK == CommandFlags::CALL_WITH_VALUE {
-            if let Some(value) = command.call.value {
+        if command.call().flags & CommandFlags::CALLTYPE_MASK == CommandFlags::CALL_WITH_VALUE {
+            if let Some(value) = command.call().value {
                 extra_args.push(Value::Literal(value.into()));
             } else {
                 return Err(WeirollError::MissingValue);
@@ -194,7 +192,7 @@ impl Planner {
 
         // Build commands, and add state entries as needed
         for (cmd_key, command) in &self.commands {
-            let mut flags = command.call.flags;
+            let mut flags = command.call().flags;
 
             let mut args =
                 self.build_command_args(command, &ps.return_slot_map, &ps.literal_slot_map)?;
@@ -213,7 +211,7 @@ impl Planner {
             if let Some(return_slot) = ps.return_slot_map.get(&cmd_key) {
                 ret = *return_slot;
             } else if ps.command_visibility.contains_key(&cmd_key) {
-                if matches!(command.kind, CommandType::RawCall) {
+                if matches!(command.kind(), CommandType::RawCall) {
                     return Err(WeirollError::InvalidReturnSlot);
                 }
 
@@ -235,21 +233,21 @@ impl Planner {
                     ps.state.push(Bytes::default());
                 }
 
-                if command.call.return_type.is_dynamic() {
+                if is_type_dynamic(&command.call().return_type) {
                     ret |= IDX_VARIABLE_LENGTH;
                 }
-            } else if matches!(command.kind, CommandType::RawCall) {
+            } else if matches!(command.kind(), CommandType::RawCall) {
                 ret = IDX_USE_STATE;
             }
 
             if (flags & CommandFlags::EXTENDED_COMMAND) == CommandFlags::EXTENDED_COMMAND {
                 let mut cmd = BytesMut::with_capacity(32);
 
-                cmd.put(&command.call.selector[..]);
+                cmd.put(&command.call().selector[..]);
                 cmd.put(&flags.bits().to_le_bytes()[..]);
                 cmd.put(&[0u8; 6][..]);
                 cmd.put_u8(ret);
-                cmd.put(&command.call.address.to_fixed_bytes()[..]);
+                cmd.put(&command.call().address.0[..]);
 
                 // push first command, indicating extended cmd
                 encoded_commands.push(cmd.to_vec().into());
@@ -265,11 +263,11 @@ impl Planner {
                 args.push(IDX_END_OF_ARGS);
                 args.resize(6, 0);
 
-                cmd.put(&command.call.selector[..]);
+                cmd.put(&command.call().selector[..]);
                 cmd.put(&flags.bits().to_le_bytes()[..]);
                 cmd.put(&args[..]);
                 cmd.put_u8(ret);
-                cmd.put(&command.call.address.to_fixed_bytes()[..]);
+                cmd.put(&command.call().address.0[..]);
 
                 encoded_commands.push(cmd.to_vec().into());
             }
@@ -287,8 +285,8 @@ impl Planner {
     ) -> Result<(), WeirollError> {
         match arg {
             Value::Return(ret) => {
-                if seen.contains(&ret.command) {
-                    command_visibility.insert(ret.command, cmd_key);
+                if seen.contains(&ret.command()) {
+                    command_visibility.insert(ret.command(), cmd_key);
                 } else {
                     return Err(WeirollError::InvalidReturnSlot);
                 }
@@ -330,11 +328,11 @@ impl Planner {
         seen: &mut HashSet<CommandKey>,
     ) -> Result<(), WeirollError> {
         for (cmd_key, command) in &self.commands {
-            let in_args = &command.call.args;
+            let in_args = &command.call().args;
             let mut extra_args = vec![];
 
-            if command.call.flags & CommandFlags::CALLTYPE_MASK == CommandFlags::CALL_WITH_VALUE {
-                if let Some(value) = command.call.value {
+            if command.call().flags & CommandFlags::CALLTYPE_MASK == CommandFlags::CALL_WITH_VALUE {
+                if let Some(value) = command.call().value {
                     extra_args.push(value.into())
                 } else {
                     return Err(WeirollError::MissingValue);
@@ -381,12 +379,12 @@ impl Planner {
         for (slot, value) in reserved_slots.iter().enumerate() {
             match value {
                 Value::Literal(literal) => {
-                    state.push(literal.bytes());
+                    state.push(literal.bytes_cloned());
                     literal_slot_map.insert(literal.clone(), slot as u8);
                 }
                 Value::Return(ret) => {
                     state.push(Bytes::default());
-                    return_slot_map.insert(ret.command, slot as u8);
+                    return_slot_map.insert(ret.command(), slot as u8);
                 }
                 _ => {
                     return Err(WeirollError::InvalidReservedSlot);
@@ -402,7 +400,7 @@ impl Planner {
 
             let slot = state.len();
 
-            state.push(literal.bytes());
+            state.push(literal.bytes_cloned());
 
             state_expirations
                 .entry(last_command)
@@ -430,177 +428,249 @@ impl Planner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethers::abi::AbiEncode;
 
     use std::str::FromStr;
 
-    use crate::bindings::{
-        math::{AddCall, SumCall},
-        strings::{StrcatCall, StrlenCall},
-    };
+    use alloy::primitives::{address, Address, FixedBytes, U256};
+    use alloy::sol;
+    use alloy::sol_types::SolCall;
+    use alloy::sol_types::SolValue;
+    use ExtendedCommandContract::extendedCommandCall;
+    use Math::{addCall, sumCall};
+    use StringUtils::{strcatCall, strlenCall};
+    use TakesBytes::takesBytesCall;
+    use TupleContract::tupleCall;
 
-    abigen!(
-        SampleContract,
-        r#"[
-            function useState(bytes[] state) returns(bytes[])
-        ]"#,
-    );
+    sol! {
+        #[allow(missing_docs)]
+        contract SampleContract {
+            function useState(bytes[] memory state) returns(bytes[] memory) {
+                return state;
+            }
+        }
+    }
+
+    sol! {
+        #[allow(missing_docs)]
+        contract Math {
+            function add(uint256 a, uint256 b) returns(uint256) {
+                return a + b;
+            }
+
+            function sub(uint256 a, uint256 b) returns(uint256) {
+                return a - b;
+            }
+
+            function sum(uint256[] memory values) returns(uint256) {
+                uint256 total;
+                for (uint256 i = 0; i < values.length; i++) {
+                    total += values[i];
+                }
+                return total;
+            }
+        }
+    }
+
+    sol! {
+        #[allow(missing_docs)]
+        contract StringUtils {
+            function strlen(string memory s) returns(uint256) {
+                return bytes(s).length;
+            }
+
+            function strcat(string memory a, string memory b) returns(string memory) {
+                return string.concat(a, b);
+            }
+        }
+    }
+
+    sol! {
+        #[allow(missing_docs)]
+        contract TupleContract {
+            function tuple() returns(uint256, uint256, string memory) {
+                return (1, 2, "Hello, world!");
+            }
+        }
+    }
+
+    sol! {
+        #[allow(missing_docs)]
+        contract TakesBytes {
+            function takesBytes(bytes memory b) {
+                b;
+            }
+        }
+    }
+
+    sol! {
+        #[allow(missing_docs)]
+        contract ExtendedCommandContract {
+            function extendedCommand(
+                uint256 a,
+                uint256 b,
+                bytes memory c,
+                (uint256,bytes32,uint256[],bytes) memory t,
+                string memory s
+            ) {
+                a;
+                b;
+                c;
+                t;
+                s;
+            }
+        }
+    }
 
     fn addr() -> Address {
-        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            .parse()
-            .unwrap()
+        address!("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
     }
 
     #[test]
     fn test_planner_add() {
         let mut planner = Planner::default();
+
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(1).into(), U256::from(2).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
 
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0x771602f7010001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
 
         assert_eq!(state.len(), 2);
-        assert_eq!(state[0], U256::from(1).encode());
-        assert_eq!(state[1], U256::from(2).encode());
+        assert_eq!(state[0], U256::from(1).abi_encode());
+        assert_eq!(state[1], U256::from(2).abi_encode());
     }
 
     #[test]
     fn test_planner_add_with_value() {
         let mut planner = Planner::default();
-        let value = U256::from(10_000_000_000_000_000_000_000u128);
+        let value = U256::from(1e18 as u128);
+
         planner
             .call(
                 addr(),
                 CommandFlags::CALL_WITH_VALUE,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(1).into(), U256::from(2).into()],
-                ParamType::Uint(256),
+                DynSolType::Uint(256),
                 Some(value),
             )
-            .expect("can add call");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call");
 
-        println!("{:?}", commands);
-        println!("{:?}", state);
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
 
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0x771602f703000102ffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x03, 0x00, 0x01, 0x02, 0xff, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(state.len(), 3);
-        assert_eq!(state[0], value.encode());
-        assert_eq!(state[1], U256::from(1).encode());
-        assert_eq!(state[2], U256::from(2).encode());
-    }
-
-    #[test]
-    fn test_planner_add_with_value_return() {
-        let mut planner = Planner::default();
-        let value = U256::from(10_000_000_000_000_000_000_000u128);
-        planner
-            .call(
-                addr(),
-                CommandFlags::CALL_WITH_VALUE,
-                AddCall::selector(),
-                vec![U256::from(1).into(), U256::from(2).into()],
-                ParamType::Uint(256),
-                Some(value),
-            )
-            .expect("can add call");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
-
-        println!("{:?}", commands);
-        println!("{:?}", state);
-
-        assert_eq!(commands.len(), 1);
-        assert_eq!(
-            commands[0],
-            "0x771602f7030001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
-        );
-        assert_eq!(state.len(), 2);
-        assert_eq!(state[0], U256::from(1).encode());
-        assert_eq!(state[1], U256::from(2).encode());
+        assert_eq!(state[0], value.abi_encode());
+        assert_eq!(state[1], U256::from(1).abi_encode());
+        assert_eq!(state[2], U256::from(2).abi_encode());
     }
 
     #[test]
     fn test_planner_deduplicates_literals() {
         let mut planner = Planner::default();
+
+        let num = U256::from(1);
+
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
-                vec![U256::from(1).into(), U256::from(1).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                addCall::SELECTOR,
+                vec![num.into(), num.into()],
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
-        let (_, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0],
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+
         assert_eq!(state.len(), 1);
+        assert_eq!(state[0], num.abi_encode());
     }
 
     #[test]
     fn test_planner_return_values() {
         let mut planner = Planner::default();
+
         let ret = planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(1).into(), U256::from(2).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
+            .expect("Could not add call");
+
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![ret.into(), U256::from(3).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call with return val");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call with return val");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0],
-            "0x771602f7010001ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0x01, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(
             commands[1],
-            "0x771602f7010102ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x01, 0x02, 0xff, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(state.len(), 3);
-        assert_eq!(state[0], U256::from(1).encode());
-        assert_eq!(state[1], U256::from(2).encode());
-        assert_eq!(state[2], U256::from(3).encode());
+        assert_eq!(state[0], U256::from(1).abi_encode());
+        assert_eq!(state[1], U256::from(2).abi_encode());
+        assert_eq!(state[2], U256::from(3).abi_encode());
     }
 
     #[test]
@@ -611,64 +681,79 @@ mod tests {
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(1).into(), U256::from(1).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
+            .expect("Could not add call");
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(1).into(), ret.into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call with return val");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call with return val");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
+
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0],
-            "0x771602f7010000ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x01, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(
             commands[1],
-            "0x771602f7010001ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(state.len(), 2);
-        assert_eq!(state[0], U256::from(1).encode());
+        assert_eq!(state[0], U256::from(1).abi_encode());
         assert_eq!(state[1], Bytes::default());
     }
 
     #[test]
     fn test_planner_dynamic_arguments() {
         let mut planner = Planner::default();
+
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                StrlenCall::selector(),
+                strlenCall::SELECTOR,
                 vec![String::from("Hello, world!").into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
+
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0x367bbd780180ffffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x36, 0x7b, 0xbd, 0x78, 0x01, 0x80, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
+
         assert_eq!(state.len(), 1);
-        assert_eq!(state[0], "Hello, world!".to_string().encode());
+        assert_eq!(
+            state[0],
+            "Hello, world!".to_string().abi_encode()[32..].to_vec()
+        );
     }
 
     #[test]
@@ -678,71 +763,80 @@ mod tests {
             .call(
                 addr(),
                 CommandFlags::CALL,
-                StrcatCall::selector(),
+                strcatCall::SELECTOR,
                 vec![
                     String::from("Hello, ").into(),
                     String::from("world!").into(),
                 ],
-                ParamType::String,
-                Some(U256::zero()),
+                DynSolType::String,
+                Some(U256::ZERO),
             )
-            .expect("can add call");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call");
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0],
-            "0xd824ccf3018081ffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0xd8, 0x24, 0xcc, 0xf3, 0x01, 0x80, 0x81, 0xff, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(state.len(), 2);
-        assert_eq!(state[0], "Hello, ".to_string().encode());
-        assert_eq!(state[1], "world!".to_string().encode());
+        assert_eq!(state[0], "Hello, ".to_string().abi_encode()[32..].to_vec());
+        assert_eq!(state[1], "world!".to_string().abi_encode()[32..].to_vec());
     }
 
     #[test]
     fn test_planner_dynamic_return_values_with_dynamic_arguments() {
         let mut planner = Planner::default();
+
         let ret = planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                StrcatCall::selector(),
+                strcatCall::SELECTOR,
                 vec![
                     String::from("Hello, ").into(),
                     String::from("world!").into(),
                 ],
-                ParamType::String,
-                Some(U256::zero()),
+                DynSolType::String,
+                Some(U256::ZERO),
             )
-            .expect("can add call");
+            .expect("Could not add call");
+
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                StrlenCall::selector(),
+                strlenCall::SELECTOR,
                 vec![ret.into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call with return val");
-        let (commands, state) = planner.plan(vec![]).expect("plan");
+            .expect("Could not add call with return val");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0],
-            "0xd824ccf3018081ffffffff81eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0xd8, 0x24, 0xcc, 0xf3, 0x01, 0x80, 0x81, 0xff, 0x00, 0x00, 0x00, 0x81, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(
             commands[1],
-            "0x367bbd780181ffffffffffffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x36, 0x7b, 0xbd, 0x78, 0x01, 0x81, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
         assert_eq!(state.len(), 2);
-        assert_eq!(state[0], "Hello, ".to_string().encode());
-        assert_eq!(state[1], "world!".to_string().encode());
+        assert_eq!(state[0], "Hello, ".to_string().abi_encode()[32..].to_vec());
+        assert_eq!(state[1], "world!".to_string().abi_encode()[32..].to_vec());
     }
 
     #[test]
@@ -752,130 +846,278 @@ mod tests {
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(1).into(), U256::from(2).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
+            .expect("Could not add call");
 
         let ret2 = planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                AddCall::selector(),
+                addCall::SELECTOR,
                 vec![U256::from(3).into(), U256::from(4).into()],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
+            .expect("Could not add call");
 
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                SumCall::selector(),
+                sumCall::SELECTOR,
                 vec![Value::Array(vec![
                     ret1.into(),
                     ret2.into(),
                     U256::from(5).into(),
                 ])],
-                ParamType::Uint(256),
-                Some(U256::zero()),
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
             )
-            .expect("can add call");
+            .expect("Could not add call");
 
-        let (commands, state) = planner.plan(vec![]).expect("plan");
-
-        println!("{:?}", commands);
-        println!("{:?}", state);
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
 
         assert_eq!(commands.len(), 3);
         assert_eq!(state.len(), 5);
 
-        assert_eq!(state[0], U256::from(1).encode());
-        assert_eq!(state[1], U256::from(2).encode());
-        assert_eq!(state[2], U256::from(4).encode());
-        assert_eq!(state[3], U256::from(3).encode());
-        assert_eq!(state[4], U256::from(5).encode());
+        assert_eq!(state[0], U256::from(1).abi_encode());
+        assert_eq!(state[1], U256::from(2).abi_encode());
+        assert_eq!(state[2], U256::from(4).abi_encode());
+        assert_eq!(state[3], U256::from(3).abi_encode());
+        assert_eq!(state[4], U256::from(5).abi_encode());
 
         assert_eq!(
             commands[0],
-            "0x771602f7010001ffffffff01eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00, 0x01, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
 
         assert_eq!(
             commands[1],
-            "0x771602f7010302ffffffff02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x03, 0x02, 0xff, 0x00, 0x00, 0x00, 0x02, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
 
         assert_eq!(
             commands[2],
-            "0x0194db8e01fd03010204fbffeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                .parse::<Bytes>()
-                .unwrap()
+            Bytes::from(vec![
+                0x01, 0x94, 0xdb, 0x8e, 0x01, 0xfd, 0x03, 0x01, 0x02, 0x04, 0xfb, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
         );
     }
 
     #[test]
-    fn test_planner_flashloan_module() {
+    fn test_planner_with_reserved_slots() {
+        let mut planner = Planner::default();
+
+        let reserved_slot_end: Value = U256::MAX.into();
+        let mut reserved_slots: Vec<Value> = vec![];
+
+        let ret1 = planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                addCall::SELECTOR,
+                vec![U256::from(1).into(), U256::from(2).into()],
+                DynSolType::Uint(256),
+                Some(U256::ZERO),
+            )
+            .expect("Could not add call");
+
+        reserved_slots.push(ret1.into());
+        reserved_slots.push(reserved_slot_end);
+
+        let (commands, state) = planner.plan(reserved_slots).expect("Could not plan");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(state.len(), 4);
+
+        assert_eq!(
+            commands[0],
+            Bytes::from(vec![
+                0x77, 0x16, 0x02, 0xf7, 0x01, 0x02, 0x03, 0xff, 0x00, 0x00, 0x00, 0x00, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+
+        assert_eq!(state[0], Bytes::default());
+        assert_eq!(state[1], U256::MAX.abi_encode());
+        assert_eq!(state[2], U256::from(1).abi_encode());
+        assert_eq!(state[3], U256::from(2).abi_encode());
+    }
+
+    #[test]
+    fn test_planner_with_tuple_return() {
+        let mut planner = Planner::default();
+
+        let ret = planner
+            .call(
+                addr(),
+                CommandFlags::CALL | CommandFlags::TUPLE_RETURN,
+                tupleCall::SELECTOR,
+                vec![],
+                DynSolType::Tuple(vec![
+                    DynSolType::Uint(256),
+                    DynSolType::Uint(256),
+                    DynSolType::String,
+                ]),
+                Some(U256::ZERO),
+            )
+            .expect("Could not add call");
+
+        planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                takesBytesCall::SELECTOR,
+                vec![ret.into()],
+                DynSolType::Bool,
+                Some(U256::ZERO),
+            )
+            .expect("Could not add call");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(state.len(), 1);
+
+        assert_eq!(
+            commands[0],
+            Bytes::from(vec![
+                0x31, 0x75, 0xaa, 0xe2, 0x81, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+
+        assert_eq!(
+            commands[1],
+            Bytes::from(vec![
+                0xd2, 0x58, 0x34, 0x6c, 0x01, 0x80, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+
+        assert_eq!(state[0], Bytes::default());
+    }
+
+    #[test]
+    fn test_planner_extended_command() {
         let mut planner = Planner::default();
 
         planner
             .call(
                 addr(),
                 CommandFlags::CALL,
-                [0x7b, 0xbe, 0xfc, 0x8d],
+                extendedCommandCall::SELECTOR,
                 vec![
+                    U256::from(1).into(),
+                    U256::from(2).into(),
+                    Bytes::from_str("0xdeadbeef").unwrap().into(),
                     Value::Tuple(vec![
-                        U256::from(7).into(), // positionId
-                        false.into(),         // isDebt
-                        U256::from(3).into(), // instruction type
-                        Value::Array(vec![]), // affected tokens
-                        Value::Array(vec![]), // commands
-                        Value::Array(vec![]), // state
-                        U256::from(0).into(), // state bitmap
-                        Value::Array(vec![    // merkle proof
-                        H256::from_str(
-                            "0xeec26e31960565573dd3a3c006488ebac583592f741b1d5149711f569c79a456",
-                        )
-                        .unwrap()
-                        .into(),
-                        H256::from_str(
-                            "0xaf800c237b500dd633b370b7e38f5273c44e2b1903d6b27f462aabab36c2d3e2",
-                        )
-                        .unwrap()
-                        .into(),
-                        H256::from_str(
-                            "0xddf902b24366aee097d551ff3ab0f7baf21988305fce1115f4ce00679a90a65d",
-                        )
-                        .unwrap()
-                        .into(),
-                        H256::from_str(
-                            "0xb8456de2a9ef23360534d4dba17c574f93f6c3f1dc73368e7800811b49db736b",
-                        )
-                        .unwrap()
-                        .into(),
+                        U256::from(3).into(),
+                        FixedBytes::<32>::from(&[0; 32]).into(),
+                        Value::Array(vec![U256::from(4).into(), U256::from(5).into()]),
+                        Bytes::from_str("0xdeadbeef").unwrap().into(),
                     ]),
-                    ]),
-                    "0xe54a55121A47451c5727ADBAF9b9FC1643477e25"
-                        .parse::<Address>()
-                        .unwrap()
-                        .into(), // token
-                    U256::exp10(18).into(), // amount
+                    String::from("Hello, weiroll!").into(),
                 ],
-                ParamType::Uint(256),
-                None,
+                DynSolType::Bool,
+                Some(U256::ZERO),
             )
-            .unwrap();
+            .expect("Could not add call");
 
-        let (commands, state) = planner.plan(vec![]).unwrap();
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
 
-        println!("{:?}", commands);
-        println!("{:?}", state);
+        // Let's explain what is going on with the state here:
+        // We will deduplicate the literals in the state, which are:
+        //  - 0xdeadbeef
+        //  - the uint256(2), which is one of the arguments and the size of the array
+        // So in total we should have 8 items in the state:
+        // - state[0] = 1 (argument of the call)
+        // - state[1] = 3 (argument of the call)
+        // - state[2] = 0 (bytes32, argument of the call)
+        // - state[3] = 2 (argument of the call AND size of the array)
+        // - state[4] = 4 (first element of the array)
+        // - state[5] = 5 (second element of the array)
+        // - state[6] = 0xdeadbeef (bytes, argument of the call, deduplicated)
+        // - state[7] = "Hello, weiroll!" (string, argument of the call)
+        assert_eq!(state.len(), 8);
+        assert_eq!(state[0], U256::from(1).abi_encode());
+        assert_eq!(state[1], U256::from(3).abi_encode());
+        assert_eq!(state[2], U256::from(0).abi_encode());
+        assert_eq!(state[3], U256::from(2).abi_encode());
+        assert_eq!(state[4], U256::from(4).abi_encode());
+        assert_eq!(state[5], U256::from(5).abi_encode());
+
+        assert_eq!(
+            state[6],
+            Bytes::from_str("0xdeadbeef").unwrap().abi_encode()[32..].to_vec()
+        );
+
+        assert_eq!(
+            state[7],
+            "Hello, weiroll!".to_string().abi_encode()[32..].to_vec()
+        );
+
+        // Now that we know what the state looks like, let's explain what will happen with the commands:
+        // First command will have more than 6 arguments, so we need to have an extended command.
+        // So first command will be:
+        // |030adae7| -> selector of `ExtendedCommandContract.extendedCommand`
+        // |41| -> CALL | EXTENDED_COMMAND flag
+        // |000000000000| -> no further arguments, they will all be in the second command
+        // |ff| -> no return value
+        // |eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee| -> address of the contract
+        // Second command will be:
+        // |00| -> first argument of the call (uint256)
+        // |03| -> second argument of the call (uint256)
+        // |86| -> third argument of the call (the dynamic bytes)
+        // |fc| -> start of the tuple
+        // |01| -> first element of the tuple (uint256)
+        // |02| -> second element of the tuple (bytes32)
+        // |fd| -> start of the array
+        // |03| -> size of the array (uint256)
+        // |04| -> first element of the array (uint256)
+        // |05| -> second element of the array (uint256)
+        // |fb| -> end of the array
+        // |86| -> bytes, element of the tuple
+        // |fb| -> end of the tuple
+        // |87| -> string, last argument of the call
+        // |ff| -> end of the call
+        // |0000000000000000000000000000000000| -> padding
+
+        assert_eq!(commands.len(), 2);
+
+        assert_eq!(
+            commands[0],
+            Bytes::from(vec![
+                0x03, 0x0a, 0xda, 0xe7, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+
+        assert_eq!(
+            commands[1],
+            Bytes::from(vec![
+                0x00, 0x03, 0x86, 0xfc, 0x01, 0x02, 0xfd, 0x03, 0x04, 0x05, 0xfb, 0x86, 0xfb, 0x87,
+                0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00
+            ])
+        );
     }
 }
