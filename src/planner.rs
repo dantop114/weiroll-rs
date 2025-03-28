@@ -100,7 +100,7 @@ impl Planner {
         let mut slots = vec![];
 
         match arg {
-            Value::Array(values) | Value::Tuple(values) => {
+            Value::Array(values) | Value::Tuple(values) | Value::FixedArray(values) => {
                 if matches!(arg, Value::Array(_)) {
                     slots.push(IDX_ARRAY_START);
 
@@ -296,16 +296,16 @@ impl Planner {
                 literal_visibility.retain(|(l, _)| *l != *lit);
                 literal_visibility.push((lit.clone(), cmd_key));
             }
-            Value::Array(values) | Value::Tuple(values) => {
-                // If it's a tuple we need to check if the tuple has a dynamic type in it.
-                if matches!(arg, Value::Array(_)) {
+            Value::Array(values) | Value::Tuple(values) | Value::FixedArray(values) => {
+                // For arrays, we need to track the length as a literal
+                if let Value::Array(values) = arg {
                     let length_literal = U256::from(values.len()).into();
-                    // Remove old visibility (if exists)
                     literal_visibility.retain(|(l, _)| *l != length_literal);
                     literal_visibility.push((length_literal, cmd_key));
                 }
 
-                for value in values.iter() {
+                // Recursively set visibility for all values in the collection
+                for value in values {
                     Self::set_visibility(
                         value,
                         cmd_key,
@@ -436,6 +436,7 @@ mod tests {
     use alloy::sol_types::SolCall;
     use alloy::sol_types::SolValue;
     use ExtendedCommandContract::extendedCommandCall;
+    use FixedArrayContract::{fixedArrayBytesCall, fixedArrayUintCall};
     use Math::{addCall, sumCall};
     use StringUtils::{strcatCall, strlenCall};
     use TakesBytes::takesBytesCall;
@@ -498,6 +499,19 @@ mod tests {
         contract TakesBytes {
             function takesBytes(bytes memory b) {
                 b;
+            }
+        }
+    }
+
+    sol! {
+        #[allow(missing_docs)]
+        contract FixedArrayContract {
+            function fixedArrayUint(uint256[3] memory a) {
+                a;
+            }
+
+            function fixedArrayBytes(bytes[3] memory a) {
+                a;
             }
         }
     }
@@ -912,6 +926,79 @@ mod tests {
             commands[2],
             Bytes::from(vec![
                 0x01, 0x94, 0xdb, 0x8e, 0x01, 0xfd, 0x03, 0x01, 0x02, 0x04, 0xfb, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+    }
+
+    #[test]
+    fn test_planner_with_fixed_array() {
+        let mut planner = Planner::default();
+
+        planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                fixedArrayUintCall::SELECTOR,
+                vec![Value::FixedArray(vec![
+                    U256::from(1).into(),
+                    U256::from(2).into(),
+                    U256::from(3).into(),
+                ])],
+                DynSolType::Bool,
+                Some(U256::ZERO),
+            )
+            .expect("Could not add call");
+
+        planner
+            .call(
+                addr(),
+                CommandFlags::CALL,
+                fixedArrayBytesCall::SELECTOR,
+                vec![Value::FixedArray(vec![
+                    Bytes::from_str("0xdeadbeef").unwrap().into(),
+                    Bytes::from_str("0xdeadbeef").unwrap().into(),
+                    Bytes::from_str("0xdeadbeef").unwrap().into(),
+                ])],
+                DynSolType::Bool,
+                Some(U256::ZERO),
+            )
+            .expect("Could not add call");
+
+        let (commands, state) = planner.plan(vec![]).expect("Could not plan");
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(state.len(), 4);
+
+        assert_eq!(state[0], U256::from(1).abi_encode());
+        assert_eq!(state[1], U256::from(2).abi_encode());
+        assert_eq!(state[2], U256::from(3).abi_encode());
+        assert_eq!(
+            state[3],
+            Bytes::from(vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x04, // length of bytes padded to 32 bytes
+                0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00
+            ])
+        );
+
+        assert_eq!(
+            commands[0],
+            Bytes::from(vec![
+                0x18, 0x9d, 0xd6, 0x92, 0x01, 0x00, 0x01, 0x02, 0xff, 0x00, 0x00, 0xff, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+                0xee, 0xee, 0xee, 0xee
+            ])
+        );
+
+        assert_eq!(
+            commands[1],
+            Bytes::from(vec![
+                0xc4, 0x3e, 0xc4, 0x64, 0x01, 0x83, 0x83, 0x83, 0xff, 0x00, 0x00, 0xff, 0xee, 0xee,
                 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
                 0xee, 0xee, 0xee, 0xee
             ])

@@ -102,6 +102,7 @@ pub enum Value {
     Literal(Literal),
     Return(ReturnValue),
     Array(Vec<Value>),
+    FixedArray(Vec<Value>),
     Tuple(Vec<Value>),
     State(Vec<Bytes>),
 }
@@ -125,11 +126,12 @@ impl From<ReturnValue> for Value {
 impl Value {
     pub fn is_dynamic(&self) -> bool {
         match self {
-            Value::Tuple(values) => values.iter().any(|v| v.is_dynamic()),
             Value::Array(_) => true,
+            Value::State(_) => true,
+            Value::FixedArray(_) => false,
             Value::Literal(l) => l.dynamic(),
             Value::Return(r) => r.dynamic(),
-            Value::State(_) => true,
+            Value::Tuple(values) => values.iter().any(|v| v.is_dynamic()),
         }
     }
 }
