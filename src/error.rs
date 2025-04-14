@@ -5,6 +5,8 @@ pub enum WeirollError {
     #[error("unable to plan")]
     PlanError,
 
+    #[error("invalid return type")]
+    InvalidReturnType,
     #[error("Call with value must have a value parameter")]
     MissingValue,
 
