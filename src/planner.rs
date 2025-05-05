@@ -365,8 +365,6 @@ impl Planner {
             &mut HashSet::new(),
         )?;
 
-        //dbg!(&literal_visibility, &command_visibility);
-
         // Maps from commands to the slots that expire on execution (if any)
         let mut state_expirations: HashMap<CommandKey, Vec<U256>> = Default::default();
 
@@ -419,10 +417,6 @@ impl Planner {
         };
 
         let encoded_commands = self.build_commands(&mut ps)?;
-
-        dbg!(&encoded_commands);
-
-        // dbg!(&state);
 
         Ok((encoded_commands, ps.state))
     }
