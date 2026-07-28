@@ -13,7 +13,7 @@ thiserror = "2.0.12"
 tracing = "0.1.41"
 
 # Alloy
-alloy = { version = "1.0.6", features = ["full", "eip712"] }
+alloy = { version = "2.2.0", features = ["full", "eip712"] }
 
 [dev-dependencies]
 tokio = { version = "1.21", features = ["macros"] }
